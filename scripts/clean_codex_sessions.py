@@ -148,12 +148,8 @@ def sha256_text(value: str) -> str:
 
 @dataclasses.dataclass
 class CatalogEntry:
-    # `session_id` is the resolved Codex thread id used by session_index and
-    # rollout filenames. The raw session metadata may additionally expose a
-    # root `session_id`; both are preserved during cleaning.
     session_id: str
     thread_name: str | None = None
-    explicit_name: str | None = None
     sqlite_title: str | None = None
     first_user_message: str | None = None
     preview: str | None = None
@@ -162,8 +158,6 @@ class CatalogEntry:
     source: str | None = None
     model: str | None = None
     model_provider: str | None = None
-    project_id: str | None = None
-    project_name: str | None = None
     archived: bool | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -173,7 +167,6 @@ class CatalogEntry:
     def display_name(self) -> str:
         for value in (
             self.thread_name,
-            self.explicit_name,
             self.sqlite_title,
             self.first_user_message,
             self.preview,
@@ -195,7 +188,6 @@ class CatalogEntry:
         items: list[tuple[str, str]] = []
         for label, value in (
             ("thread_name", self.thread_name),
-            ("explicit_name", self.explicit_name),
             ("sqlite_title", self.sqlite_title),
             ("first_user_message", self.first_user_message),
             ("preview", self.preview),
@@ -376,7 +368,6 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
 
             wanted = [
                 "id",
-                "name",
                 "title",
                 "first_user_message",
                 "preview",
@@ -385,7 +376,6 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
                 "source",
                 "model",
                 "model_provider",
-                "project_id",
                 "archived",
                 "created_at",
                 "created_at_ms",
@@ -396,27 +386,6 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
             sql = "SELECT " + ", ".join(f'"{col}"' for col in selected) + " FROM threads"
 
             conn.row_factory = sqlite3.Row
-
-            # Newer Codex state databases can persist canonical projects.
-            # Prefer that assignment for Entire Project discovery when it is
-            # available, but keep older Codex installations fully supported.
-            project_names: dict[str, str] = {}
-            project_cols = sqlite_columns(conn, "projects")
-            if {"id", "name"}.issubset(project_cols):
-                try:
-                    for project_row in conn.execute('SELECT "id", "name" FROM projects'):
-                        project_id = project_row["id"]
-                        project_name = project_row["name"]
-                        if (
-                            isinstance(project_id, str)
-                            and project_id.strip()
-                            and isinstance(project_name, str)
-                            and project_name.strip()
-                        ):
-                            project_names[project_id.strip()] = project_name.strip()
-                except sqlite3.Error:
-                    project_names = {}
-
             for row in conn.execute(sql):
                 sid = row["id"]
                 if not isinstance(sid, str) or not sid.strip():
@@ -430,7 +399,6 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
                         if isinstance(value, str) and value.strip():
                             setattr(entry, attr, value.strip())
 
-                assign_text("explicit_name", "name")
                 assign_text("sqlite_title", "title")
                 assign_text("first_user_message", "first_user_message")
                 assign_text("preview", "preview")
@@ -439,9 +407,6 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
                 assign_text("source", "source")
                 assign_text("model", "model")
                 assign_text("model_provider", "model_provider")
-                assign_text("project_id", "project_id")
-                if entry.project_id:
-                    entry.project_name = project_names.get(entry.project_id)
 
                 if "archived" in row.keys() and row["archived"] is not None:
                     try:
@@ -519,8 +484,6 @@ class Candidate:
     reasons: list[str]
     display_name: str
     cwd_basename: str | None
-    project_id: str | None
-    project_name: str | None
     source: str | None
     model: str | None
     archived: bool | None
@@ -534,21 +497,6 @@ def match_score(query: str, entry: CatalogEntry, project_mode: bool) -> Candidat
 
     best = 0
     reasons: list[str] = []
-
-    # Prefer Codex's canonical project assignment when the current state
-    # database exposes one. Name/cwd matching remains a fallback for older
-    # installations and sessions without project assignment.
-    if project_mode and entry.project_name:
-        project_name = normalize_label(entry.project_name)
-        if project_name == q:
-            best = 120
-            reasons = ["project_name"]
-        elif project_name.startswith(q) or q.startswith(project_name):
-            best = 108
-            reasons = ["project_name"]
-        elif q in project_name:
-            best = 98
-            reasons = ["project_name"]
 
     for label, value in entry.candidate_strings():
         n = normalize_label(value)
@@ -581,8 +529,6 @@ def match_score(query: str, entry: CatalogEntry, project_mode: bool) -> Candidat
         reasons=sorted(set(reasons)),
         display_name=entry.display_name,
         cwd_basename=entry.cwd_basename,
-        project_id=entry.project_id,
-        project_name=entry.project_name,
         source=entry.source,
         model=entry.model,
         archived=entry.archived,
@@ -626,8 +572,6 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
         "match_reasons": candidate.reasons,
         "display_name": candidate.display_name,
         "cwd_basename": candidate.cwd_basename,
-        "project_id": candidate.project_id,
-        "project_name": candidate.project_name,
         "source": candidate.source,
         "model": candidate.model,
         "archived": candidate.archived,
@@ -653,10 +597,6 @@ def print_candidates(candidates: Sequence[Candidate]) -> None:
         extras = []
         if item.cwd_basename:
             extras.append(f"cwd={item.cwd_basename!r}")
-        if item.project_name:
-            extras.append(f"project={item.project_name!r}")
-        if item.project_id:
-            extras.append(f"project_id={item.project_id!r}")
         if item.model:
             extras.append(f"model={item.model!r}")
         if item.source:
@@ -719,11 +659,9 @@ class TokenSnapshot:
     timestamp: str | None
     input_tokens: int | None
     cached_input_tokens: int | None
-    cache_write_input_tokens: int | None
     output_tokens: int | None
     reasoning_output_tokens: int | None
     total_tokens: int | None
-    codex_rollout_budget_units: int | None
     source: str
 
     def as_dict(self) -> dict[str, Any]:
@@ -747,10 +685,7 @@ class SessionCleaner:
 
         self.events: list[dict[str, Any]] = []
         self.metadata: dict[str, Any] = {
-            # V1 keeps the user-facing term `session_id`, but this resolved ID
-            # is specifically Codex's named thread/rollout identity.
             "session_id": session_id,
-            "identity_basis": "codex_thread_id",
             "display_name": catalog_entry.display_name if catalog_entry else None,
             "source_file_name": source_path.name,
             "source_file_sha256": None,
@@ -775,43 +710,44 @@ class SessionCleaner:
         raw_hasher = hashlib.sha256()
         try:
             with self.source_path.open("rb") as fh:
-                for ordinal, raw in enumerate(fh, start=1):
-                    raw_hasher.update(raw)
-                    self.records_inspected += 1
-                    line_terminated = raw.endswith(b"\n") or raw.endswith(b"\r")
-                    text = raw.decode("utf-8", errors="replace").strip()
-
-                    if not text:
-                        self.records_discarded += 1
-                        continue
-
-                    try:
-                        record = json.loads(text)
-                    except json.JSONDecodeError:
-                        # A non-terminated JSONL record is treated as an
-                        # incomplete final write rather than as stable
-                        # malformed data. This keeps active rollouts safe.
-                        if not line_terminated:
-                            self.deferred_records += 1
-                        else:
-                            self.malformed_records += 1
-                        self.records_discarded += 1
-                        continue
-
-                    if not isinstance(record, dict):
-                        self.records_discarded += 1
-                        continue
-
-                    retained_before = len(self.events)
-                    handled = self._process_record(record, ordinal)
-                    if handled or len(self.events) > retained_before:
-                        self.records_retained += 1
-                    else:
-                        self.records_discarded += 1
+                lines = fh.readlines()
         except OSError as exc:
             raise RuntimeError(f"Unable to read source session: {exc}") from exc
 
+        for raw in lines:
+            raw_hasher.update(raw)
         self.metadata["source_file_sha256"] = raw_hasher.hexdigest()
+
+        for ordinal, raw in enumerate(lines, start=1):
+            self.records_inspected += 1
+            line_terminated = raw.endswith(b"\n") or raw.endswith(b"\r")
+            text = raw.decode("utf-8", errors="replace").strip()
+
+            if not text:
+                self.records_discarded += 1
+                continue
+
+            try:
+                record = json.loads(text)
+            except json.JSONDecodeError:
+                if ordinal == len(lines) and not line_terminated:
+                    self.deferred_records += 1
+                else:
+                    self.malformed_records += 1
+                self.records_discarded += 1
+                continue
+
+            if not isinstance(record, dict):
+                self.records_discarded += 1
+                continue
+
+            retained_before = len(self.events)
+            handled = self._process_record(record, ordinal)
+            if handled or len(self.events) > retained_before:
+                self.records_retained += 1
+            else:
+                self.records_discarded += 1
+
         self._finalize_metadata()
 
         return {
@@ -833,7 +769,6 @@ class SessionCleaner:
             "token_usage": self._token_summary(),
             "events": self.events,
         }
-
 
     def _process_record(self, record: dict[str, Any], ordinal: int) -> bool:
         timestamp = record.get("timestamp")
@@ -887,17 +822,9 @@ class SessionCleaner:
         else:
             source = payload
 
-        raw_thread_id = source.get("id")
-        if isinstance(raw_thread_id, str) and raw_thread_id.strip():
-            self.metadata["thread_id_from_source"] = raw_thread_id.strip()
-            if raw_thread_id.strip() != self.session_id:
-                self.metadata["identity_warning"] = (
-                    "Resolved thread id does not match the rollout session-meta id."
-                )
-
-        raw_session_id = source.get("session_id")
-        if isinstance(raw_session_id, str) and raw_session_id.strip():
-            self.metadata["root_session_id_from_source"] = raw_session_id.strip()
+        sid = source.get("session_id") or source.get("id")
+        if isinstance(sid, str) and sid.strip():
+            self.metadata["session_id_from_source"] = sid.strip()
 
         for out_key, keys in (
             ("originator", ("originator",)),
@@ -1259,17 +1186,11 @@ class SessionCleaner:
                 if usage.get("cached_input_tokens") is not None
                 else usage.get("cache_read_tokens")
             ),
-            cache_write_input_tokens=int_or_none(
-                usage.get("cache_write_input_tokens")
-            ),
             output_tokens=int_or_none(usage.get("output_tokens")),
             reasoning_output_tokens=int_or_none(
                 usage.get("reasoning_output_tokens")
             ),
             total_tokens=int_or_none(usage.get("total_tokens")),
-            codex_rollout_budget_units=int_or_none(
-                usage.get("codex_rollout_budget_units")
-            ),
             source=source,
         )
 
@@ -1280,11 +1201,9 @@ class SessionCleaner:
             for value in (
                 snapshot.input_tokens,
                 snapshot.cached_input_tokens,
-                snapshot.cache_write_input_tokens,
                 snapshot.output_tokens,
                 snapshot.reasoning_output_tokens,
                 snapshot.total_tokens,
-                snapshot.codex_rollout_budget_units,
             )
         )
 
@@ -1313,11 +1232,9 @@ class SessionCleaner:
         return (
             a.input_tokens == b.input_tokens
             and a.cached_input_tokens == b.cached_input_tokens
-            and a.cache_write_input_tokens == b.cache_write_input_tokens
             and a.output_tokens == b.output_tokens
             and a.reasoning_output_tokens == b.reasoning_output_tokens
             and a.total_tokens == b.total_tokens
-            and a.codex_rollout_budget_units == b.codex_rollout_budget_units
         )
 
     @staticmethod
@@ -1594,11 +1511,9 @@ def write_cleaned_outputs(
 TOKEN_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
-    "cache_write_input_tokens",
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
-    "codex_rollout_budget_units",
 )
 
 
