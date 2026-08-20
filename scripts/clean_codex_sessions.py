@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
 
-SCRIPT_VERSION = "0.1.0"
+SCRIPT_VERSION = "0.1.1"
 CLEANED_SCHEMA = "codex-session-review/cleaned-v1"
 MANIFEST_SCHEMA = "codex-session-review/analysis-manifest-v1"
 
@@ -88,14 +88,25 @@ def safe_filename(value: str, fallback: str = "analysis") -> str:
 
 
 def truncate_text(text: str | None, limit: int) -> tuple[str, bool, int]:
+    """Truncate long evidence while preserving both the beginning and ending.
+
+    Command/test failures and summaries often appear at the end of tool output,
+    so head-only truncation can erase the most important evidence.
+    """
     if text is None:
         return "", False, 0
     original = len(text)
     if original <= limit:
         return text, False, original
-    suffix = f"\n\n[TRUNCATED: original length {original} characters]"
-    keep = max(0, limit - len(suffix))
-    return text[:keep] + suffix, True, original
+
+    marker = f"\n\n[TRUNCATED: original length {original} characters]\n\n"
+    if limit <= len(marker):
+        return marker[:limit], True, original
+
+    keep = limit - len(marker)
+    head_keep = keep // 2
+    tail_keep = keep - head_keep
+    return text[:head_keep] + marker + text[-tail_keep:], True, original
 
 
 def json_dumps(value: Any) -> str:
@@ -148,8 +159,12 @@ def sha256_text(value: str) -> str:
 
 @dataclasses.dataclass
 class CatalogEntry:
+    # `session_id` is the resolved Codex thread id used by session_index and
+    # rollout filenames. The raw session metadata may additionally expose a
+    # root `session_id`; both are preserved during cleaning.
     session_id: str
     thread_name: str | None = None
+    explicit_name: str | None = None
     sqlite_title: str | None = None
     first_user_message: str | None = None
     preview: str | None = None
@@ -158,6 +173,8 @@ class CatalogEntry:
     source: str | None = None
     model: str | None = None
     model_provider: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
     archived: bool | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -167,6 +184,7 @@ class CatalogEntry:
     def display_name(self) -> str:
         for value in (
             self.thread_name,
+            self.explicit_name,
             self.sqlite_title,
             self.first_user_message,
             self.preview,
@@ -188,6 +206,7 @@ class CatalogEntry:
         items: list[tuple[str, str]] = []
         for label, value in (
             ("thread_name", self.thread_name),
+            ("explicit_name", self.explicit_name),
             ("sqlite_title", self.sqlite_title),
             ("first_user_message", self.first_user_message),
             ("preview", self.preview),
@@ -368,6 +387,7 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
 
             wanted = [
                 "id",
+                "name",
                 "title",
                 "first_user_message",
                 "preview",
@@ -376,6 +396,7 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
                 "source",
                 "model",
                 "model_provider",
+                "project_id",
                 "archived",
                 "created_at",
                 "created_at_ms",
@@ -386,6 +407,27 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
             sql = "SELECT " + ", ".join(f'"{col}"' for col in selected) + " FROM threads"
 
             conn.row_factory = sqlite3.Row
+
+            # Newer Codex state databases can persist canonical projects.
+            # Prefer that assignment for Entire Project discovery when it is
+            # available, but keep older Codex installations fully supported.
+            project_names: dict[str, str] = {}
+            project_cols = sqlite_columns(conn, "projects")
+            if {"id", "name"}.issubset(project_cols):
+                try:
+                    for project_row in conn.execute('SELECT "id", "name" FROM projects'):
+                        project_id = project_row["id"]
+                        project_name = project_row["name"]
+                        if (
+                            isinstance(project_id, str)
+                            and project_id.strip()
+                            and isinstance(project_name, str)
+                            and project_name.strip()
+                        ):
+                            project_names[project_id.strip()] = project_name.strip()
+                except sqlite3.Error:
+                    project_names = {}
+
             for row in conn.execute(sql):
                 sid = row["id"]
                 if not isinstance(sid, str) or not sid.strip():
@@ -399,6 +441,7 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
                         if isinstance(value, str) and value.strip():
                             setattr(entry, attr, value.strip())
 
+                assign_text("explicit_name", "name")
                 assign_text("sqlite_title", "title")
                 assign_text("first_user_message", "first_user_message")
                 assign_text("preview", "preview")
@@ -407,6 +450,9 @@ def load_sqlite_catalog(codex_home: Path) -> dict[str, CatalogEntry]:
                 assign_text("source", "source")
                 assign_text("model", "model")
                 assign_text("model_provider", "model_provider")
+                assign_text("project_id", "project_id")
+                if entry.project_id:
+                    entry.project_name = project_names.get(entry.project_id)
 
                 if "archived" in row.keys() and row["archived"] is not None:
                     try:
@@ -484,6 +530,8 @@ class Candidate:
     reasons: list[str]
     display_name: str
     cwd_basename: str | None
+    project_id: str | None
+    project_name: str | None
     source: str | None
     model: str | None
     archived: bool | None
@@ -497,6 +545,21 @@ def match_score(query: str, entry: CatalogEntry, project_mode: bool) -> Candidat
 
     best = 0
     reasons: list[str] = []
+
+    # Prefer Codex's canonical project assignment when the current state
+    # database exposes one. Name/cwd matching remains a fallback for older
+    # installations and sessions without project assignment.
+    if project_mode and entry.project_name:
+        project_name = normalize_label(entry.project_name)
+        if project_name == q:
+            best = 120
+            reasons = ["project_name"]
+        elif project_name.startswith(q) or q.startswith(project_name):
+            best = 108
+            reasons = ["project_name"]
+        elif q in project_name:
+            best = 98
+            reasons = ["project_name"]
 
     for label, value in entry.candidate_strings():
         n = normalize_label(value)
@@ -529,6 +592,8 @@ def match_score(query: str, entry: CatalogEntry, project_mode: bool) -> Candidat
         reasons=sorted(set(reasons)),
         display_name=entry.display_name,
         cwd_basename=entry.cwd_basename,
+        project_id=entry.project_id,
+        project_name=entry.project_name,
         source=entry.source,
         model=entry.model,
         archived=entry.archived,
@@ -572,6 +637,8 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
         "match_reasons": candidate.reasons,
         "display_name": candidate.display_name,
         "cwd_basename": candidate.cwd_basename,
+        "project_id": candidate.project_id,
+        "project_name": candidate.project_name,
         "source": candidate.source,
         "model": candidate.model,
         "archived": candidate.archived,
@@ -597,6 +664,10 @@ def print_candidates(candidates: Sequence[Candidate]) -> None:
         extras = []
         if item.cwd_basename:
             extras.append(f"cwd={item.cwd_basename!r}")
+        if item.project_name:
+            extras.append(f"project={item.project_name!r}")
+        if item.project_id:
+            extras.append(f"project_id={item.project_id!r}")
         if item.model:
             extras.append(f"model={item.model!r}")
         if item.source:
@@ -659,9 +730,11 @@ class TokenSnapshot:
     timestamp: str | None
     input_tokens: int | None
     cached_input_tokens: int | None
+    cache_write_input_tokens: int | None
     output_tokens: int | None
     reasoning_output_tokens: int | None
     total_tokens: int | None
+    codex_rollout_budget_units: int | None
     source: str
 
     def as_dict(self) -> dict[str, Any]:
@@ -685,7 +758,10 @@ class SessionCleaner:
 
         self.events: list[dict[str, Any]] = []
         self.metadata: dict[str, Any] = {
+            # V1 keeps the user-facing term `session_id`, but this resolved ID
+            # is specifically Codex's named thread/rollout identity.
             "session_id": session_id,
+            "identity_basis": "codex_thread_id",
             "display_name": catalog_entry.display_name if catalog_entry else None,
             "source_file_name": source_path.name,
             "source_file_sha256": None,
@@ -700,6 +776,12 @@ class SessionCleaner:
         self.reasoning_records_omitted = 0
         self.truncated_records = 0
         self.compaction_events = 0
+        self.compaction_records_deduplicated = 0
+        self.runtime_context_records_compacted = 0
+        self.runtime_context_chars_compacted = 0
+        self._last_compaction_timestamp: str | None = None
+        self.raw_first_record_timestamp: str | None = None
+        self.raw_last_record_timestamp: str | None = None
 
         self.token_snapshots: list[TokenSnapshot] = []
         self.last_token_usage: TokenSnapshot | None = None
@@ -710,44 +792,49 @@ class SessionCleaner:
         raw_hasher = hashlib.sha256()
         try:
             with self.source_path.open("rb") as fh:
-                lines = fh.readlines()
+                for ordinal, raw in enumerate(fh, start=1):
+                    raw_hasher.update(raw)
+                    self.records_inspected += 1
+                    line_terminated = raw.endswith(b"\n") or raw.endswith(b"\r")
+                    text = raw.decode("utf-8", errors="replace").strip()
+
+                    if not text:
+                        self.records_discarded += 1
+                        continue
+
+                    try:
+                        record = json.loads(text)
+                    except json.JSONDecodeError:
+                        # A non-terminated JSONL record is treated as an
+                        # incomplete final write rather than as stable
+                        # malformed data. This keeps active rollouts safe.
+                        if not line_terminated:
+                            self.deferred_records += 1
+                        else:
+                            self.malformed_records += 1
+                        self.records_discarded += 1
+                        continue
+
+                    if not isinstance(record, dict):
+                        self.records_discarded += 1
+                        continue
+
+                    record_timestamp = record.get("timestamp")
+                    if isinstance(record_timestamp, str):
+                        if self.raw_first_record_timestamp is None:
+                            self.raw_first_record_timestamp = record_timestamp
+                        self.raw_last_record_timestamp = record_timestamp
+
+                    retained_before = len(self.events)
+                    handled = self._process_record(record, ordinal)
+                    if handled or len(self.events) > retained_before:
+                        self.records_retained += 1
+                    else:
+                        self.records_discarded += 1
         except OSError as exc:
             raise RuntimeError(f"Unable to read source session: {exc}") from exc
 
-        for raw in lines:
-            raw_hasher.update(raw)
         self.metadata["source_file_sha256"] = raw_hasher.hexdigest()
-
-        for ordinal, raw in enumerate(lines, start=1):
-            self.records_inspected += 1
-            line_terminated = raw.endswith(b"\n") or raw.endswith(b"\r")
-            text = raw.decode("utf-8", errors="replace").strip()
-
-            if not text:
-                self.records_discarded += 1
-                continue
-
-            try:
-                record = json.loads(text)
-            except json.JSONDecodeError:
-                if ordinal == len(lines) and not line_terminated:
-                    self.deferred_records += 1
-                else:
-                    self.malformed_records += 1
-                self.records_discarded += 1
-                continue
-
-            if not isinstance(record, dict):
-                self.records_discarded += 1
-                continue
-
-            retained_before = len(self.events)
-            handled = self._process_record(record, ordinal)
-            if handled or len(self.events) > retained_before:
-                self.records_retained += 1
-            else:
-                self.records_discarded += 1
-
         self._finalize_metadata()
 
         return {
@@ -764,11 +851,15 @@ class SessionCleaner:
                 "reasoning_records_omitted": self.reasoning_records_omitted,
                 "truncated_records": self.truncated_records,
                 "compaction_events": self.compaction_events,
+                "compaction_records_deduplicated": self.compaction_records_deduplicated,
+                "runtime_context_records_compacted": self.runtime_context_records_compacted,
+                "runtime_context_chars_compacted": self.runtime_context_chars_compacted,
                 "unknown_record_types": self.unknown_record_types,
             },
             "token_usage": self._token_summary(),
             "events": self.events,
         }
+
 
     def _process_record(self, record: dict[str, Any], ordinal: int) -> bool:
         timestamp = record.get("timestamp")
@@ -793,16 +884,11 @@ class SessionCleaner:
             return self._handle_event_msg(payload, timestamp, ordinal)
 
         if top_type == "compacted":
-            self.compaction_events += 1
-            self._append_event(
-                {
-                    "ordinal": ordinal,
-                    "timestamp": timestamp,
-                    "kind": "system_event",
-                    "event": "compacted",
-                }
+            return self._record_compaction(
+                timestamp=timestamp,
+                ordinal=ordinal,
+                source_event="compacted",
             )
-            return True
 
         if isinstance(top_type, str):
             self.unknown_record_types[top_type] = (
@@ -822,9 +908,17 @@ class SessionCleaner:
         else:
             source = payload
 
-        sid = source.get("session_id") or source.get("id")
-        if isinstance(sid, str) and sid.strip():
-            self.metadata["session_id_from_source"] = sid.strip()
+        raw_thread_id = source.get("id")
+        if isinstance(raw_thread_id, str) and raw_thread_id.strip():
+            self.metadata["thread_id_from_source"] = raw_thread_id.strip()
+            if raw_thread_id.strip() != self.session_id:
+                self.metadata["identity_warning"] = (
+                    "Resolved thread id does not match the rollout session-meta id."
+                )
+
+        raw_session_id = source.get("session_id")
+        if isinstance(raw_session_id, str) and raw_session_id.strip():
+            self.metadata["root_session_id_from_source"] = raw_session_id.strip()
 
         for out_key, keys in (
             ("originator", ("originator",)),
@@ -893,6 +987,24 @@ class SessionCleaner:
             text = self._extract_content_text(payload.get("content"))
             if not text:
                 return False
+
+            if role in {"developer", "system"} and text.lstrip().startswith("<app-context>"):
+                self.runtime_context_records_compacted += 1
+                self.runtime_context_chars_compacted += len(text)
+                self._append_event(
+                    {
+                        "ordinal": ordinal,
+                        "timestamp": timestamp,
+                        "kind": "runtime_context",
+                        "context_type": "codex_app_context",
+                        "original_chars": len(text),
+                        "summary": (
+                            "Codex desktop runtime/app context omitted from the "
+                            "analysis transcript; retained only as metadata."
+                        ),
+                    }
+                )
+                return True
 
             cleaned, truncated, original_chars = truncate_text(
                 text,
@@ -1001,16 +1113,11 @@ class SessionCleaner:
             "context_compaction",
             "compaction_trigger",
         }:
-            self.compaction_events += 1
-            self._append_event(
-                {
-                    "ordinal": ordinal,
-                    "timestamp": timestamp,
-                    "kind": "system_event",
-                    "event": str(item_type),
-                }
+            return self._record_compaction(
+                timestamp=timestamp,
+                ordinal=ordinal,
+                source_event=str(item_type),
             )
-            return True
 
         if isinstance(item_type, str):
             key = f"response_item:{item_type}"
@@ -1059,18 +1166,105 @@ class SessionCleaner:
             )
             return True
 
+        if event_type == "patch_apply_end":
+            changes = payload.get("changes")
+            normalized_changes: list[dict[str, Any]] = []
+            if isinstance(changes, dict):
+                for raw_path, change in changes.items():
+                    filename = (
+                        str(raw_path).replace("\\\\", "/").replace("\\", "/").rsplit("/", 1)[-1]
+                        if raw_path is not None
+                        else "unknown"
+                    )
+                    change_type = (
+                        change.get("type")
+                        if isinstance(change, dict)
+                        else None
+                    )
+                    normalized_changes.append(
+                        {
+                            "file": filename or "unknown",
+                            "change_type": change_type,
+                        }
+                    )
+
+            stdout = payload.get("stdout")
+            stderr = payload.get("stderr")
+            stdout_text = stdout if isinstance(stdout, str) else ""
+            stderr_text = stderr if isinstance(stderr, str) else ""
+
+            evidence_text = ""
+            if stderr_text.strip() or payload.get("success") is False:
+                evidence_text = "\n".join(
+                    part
+                    for part in (
+                        f"stdout:\n{stdout_text}" if stdout_text.strip() else "",
+                        f"stderr:\n{stderr_text}" if stderr_text.strip() else "",
+                    )
+                    if part
+                )
+                # Keep failure evidence while avoiding unnecessary disclosure
+                # of absolute local paths already represented by file basenames.
+                if isinstance(changes, dict):
+                    for raw_path in changes:
+                        if raw_path is None:
+                            continue
+                        raw_path_text = str(raw_path)
+                        filename = (
+                            raw_path_text.replace("\\\\", "/")
+                            .replace("\\", "/")
+                            .rsplit("/", 1)[-1]
+                        )
+                        evidence_text = evidence_text.replace(
+                            raw_path_text,
+                            filename or "unknown",
+                        )
+            elif stdout_text.strip():
+                # Success output is usually a file list; keep only the first
+                # line because structured file evidence is stored separately.
+                evidence_text = stdout_text.strip().splitlines()[0]
+
+            cleaned_evidence, truncated, original_chars = truncate_text(
+                evidence_text,
+                self.max_tool_chars,
+            )
+            if truncated:
+                self.truncated_records += 1
+
+            self._append_event(
+                {
+                    "ordinal": ordinal,
+                    "timestamp": timestamp,
+                    "kind": "patch_result",
+                    "call_id": payload.get("call_id"),
+                    "turn_id": payload.get("turn_id"),
+                    "success": payload.get("success"),
+                    "status": payload.get("status"),
+                    "changed_file_count": len(normalized_changes),
+                    "changes": normalized_changes,
+                    "evidence": cleaned_evidence,
+                    "truncated": truncated,
+                    "original_chars": original_chars,
+                }
+            )
+            return True
+
+        if event_type == "context_compacted":
+            return self._record_compaction(
+                timestamp=timestamp,
+                ordinal=ordinal,
+                source_event="context_compacted",
+            )
+
         if event_type in {
             "task_started",
             "task_complete",
             "turn_started",
             "turn_complete",
             "turn_aborted",
-            "context_compacted",
             "thread_settings_applied",
             "thread_rolled_back",
         }:
-            if event_type == "context_compacted":
-                self.compaction_events += 1
             self._append_event(
                 {
                     "ordinal": ordinal,
@@ -1186,11 +1380,17 @@ class SessionCleaner:
                 if usage.get("cached_input_tokens") is not None
                 else usage.get("cache_read_tokens")
             ),
+            cache_write_input_tokens=int_or_none(
+                usage.get("cache_write_input_tokens")
+            ),
             output_tokens=int_or_none(usage.get("output_tokens")),
             reasoning_output_tokens=int_or_none(
                 usage.get("reasoning_output_tokens")
             ),
             total_tokens=int_or_none(usage.get("total_tokens")),
+            codex_rollout_budget_units=int_or_none(
+                usage.get("codex_rollout_budget_units")
+            ),
             source=source,
         )
 
@@ -1201,9 +1401,11 @@ class SessionCleaner:
             for value in (
                 snapshot.input_tokens,
                 snapshot.cached_input_tokens,
+                snapshot.cache_write_input_tokens,
                 snapshot.output_tokens,
                 snapshot.reasoning_output_tokens,
                 snapshot.total_tokens,
+                snapshot.codex_rollout_budget_units,
             )
         )
 
@@ -1232,9 +1434,11 @@ class SessionCleaner:
         return (
             a.input_tokens == b.input_tokens
             and a.cached_input_tokens == b.cached_input_tokens
+            and a.cache_write_input_tokens == b.cache_write_input_tokens
             and a.output_tokens == b.output_tokens
             and a.reasoning_output_tokens == b.reasoning_output_tokens
             and a.total_tokens == b.total_tokens
+            and a.codex_rollout_budget_units == b.codex_rollout_budget_units
         )
 
     @staticmethod
@@ -1269,6 +1473,46 @@ class SessionCleaner:
         except (TypeError, ValueError):
             return repr(value)
 
+    def _record_compaction(
+        self,
+        timestamp: str | None,
+        ordinal: int,
+        source_event: str,
+    ) -> bool:
+        """Record one logical compaction operation across duplicate wire events."""
+        if self._last_compaction_timestamp is not None:
+            distance = timestamp_distance_seconds(
+                self._last_compaction_timestamp,
+                timestamp,
+            )
+            if distance is not None and distance <= 2.0:
+                self.compaction_records_deduplicated += 1
+                return True
+
+        self.compaction_events += 1
+        self._last_compaction_timestamp = timestamp
+        self._append_event(
+            {
+                "ordinal": ordinal,
+                "timestamp": timestamp,
+                "kind": "system_event",
+                "event": "context_compacted",
+                "source_event": source_event,
+            }
+        )
+        return True
+
+    @staticmethod
+    def _is_meaningful_event(event: dict[str, Any]) -> bool:
+        kind = event.get("kind")
+        if kind in {"token_snapshot", "turn_context", "runtime_context"}:
+            return False
+        if kind == "system_event" and event.get("event") in {
+            "thread_settings_applied",
+        }:
+            return False
+        return True
+
     def _append_event(
         self,
         event: dict[str, Any],
@@ -1301,6 +1545,18 @@ class SessionCleaner:
             self.metadata["first_event_timestamp"] = timestamps[0]
             self.metadata["last_event_timestamp"] = timestamps[-1]
 
+        meaningful_timestamps = [
+            event.get("timestamp")
+            for event in self.events
+            if self._is_meaningful_event(event)
+            and isinstance(event.get("timestamp"), str)
+        ]
+        if meaningful_timestamps:
+            self.metadata["first_meaningful_activity_timestamp"] = meaningful_timestamps[0]
+            self.metadata["last_meaningful_activity_timestamp"] = meaningful_timestamps[-1]
+
+        self.metadata["raw_first_record_timestamp"] = self.raw_first_record_timestamp
+        self.metadata["raw_last_record_timestamp"] = self.raw_last_record_timestamp
         self.metadata["models_seen"] = self.models_seen
 
         if self.catalog_entry:
@@ -1397,6 +1653,31 @@ def event_to_markdown(event: dict[str, Any]) -> str:
             f"```text\n{event.get('detail', '')}\n```\n"
         )
 
+    if kind == "patch_result":
+        changes = event.get("changes") or []
+        change_lines = [
+            f"- {item.get('change_type') or 'change'}: {item.get('file') or 'unknown'}"
+            for item in changes
+            if isinstance(item, dict)
+        ]
+        details = "\n".join(change_lines) if change_lines else "- No structured file list"
+        evidence = event.get("evidence") or ""
+        evidence_block = f"\n\n```text\n{evidence}\n```" if evidence else ""
+        return (
+            f"### PATCH RESULT · {timestamp}\n\n"
+            f"- Success: {event.get('success')}\n"
+            f"- Status: {event.get('status') or 'unavailable'}\n"
+            f"- Files changed: {event.get('changed_file_count', 0)}\n"
+            f"{details}{evidence_block}\n"
+        )
+
+    if kind == "runtime_context":
+        return (
+            f"### RUNTIME CONTEXT · {timestamp}\n\n"
+            f"{event.get('summary', 'Runtime context compacted.')} "
+            f"(original characters: {event.get('original_chars', 0)})\n"
+        )
+
     if kind == "token_snapshot":
         usage = event.get("usage") or {}
         return (
@@ -1443,6 +1724,8 @@ def cleaned_to_markdown(cleaned: dict[str, Any]) -> str:
         f"- Source File: `{session.get('source_file_name')}`",
         f"- First Event: {session.get('first_event_timestamp') or 'Unavailable'}",
         f"- Last Event: {session.get('last_event_timestamp') or 'Unavailable'}",
+        f"- Raw Last Record: {session.get('raw_last_record_timestamp') or 'Unavailable'}",
+        f"- Last Meaningful Activity: {session.get('last_meaningful_activity_timestamp') or 'Unavailable'}",
         f"- Models Seen: {', '.join(session.get('models_seen') or []) or 'Unavailable'}",
         "",
         "## Cleaning Summary",
@@ -1455,6 +1738,9 @@ def cleaned_to_markdown(cleaned: dict[str, Any]) -> str:
         f"- Reasoning records omitted: {cleaning.get('reasoning_records_omitted')}",
         f"- Truncated records: {cleaning.get('truncated_records')}",
         f"- Compaction events: {cleaning.get('compaction_events')}",
+        f"- Compaction duplicate records suppressed: {cleaning.get('compaction_records_deduplicated')}",
+        f"- Runtime context records compacted: {cleaning.get('runtime_context_records_compacted')}",
+        f"- Runtime context characters compacted: {cleaning.get('runtime_context_chars_compacted')}",
         "",
         "## Token Usage",
         "",
@@ -1511,9 +1797,11 @@ def write_cleaned_outputs(
 TOKEN_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
+    "cache_write_input_tokens",
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
+    "codex_rollout_budget_units",
 )
 
 
@@ -1535,7 +1823,7 @@ def combined_token_summary(cleaned_sessions: Sequence[dict[str, Any]]) -> dict[s
     else:
         scope_coverage = "partial"
 
-    known_sum: dict[str, int] = {}
+    known_sum: dict[str, int | None] = {}
     complete_scope_total: dict[str, int | None] = {}
 
     for field in TOKEN_FIELDS:
@@ -1544,7 +1832,7 @@ def combined_token_summary(cleaned_sessions: Sequence[dict[str, Any]]) -> dict[s
             for snapshot in snapshots
         ]
         known_values = [value for value in values if value is not None]
-        known_sum[field] = sum(known_values)
+        known_sum[field] = sum(known_values) if known_values else None
         complete_scope_total[field] = (
             sum(known_values)
             if len(known_values) == len(cleaned_sessions)
@@ -1589,6 +1877,12 @@ def build_manifest(
                 ),
                 "last_event_timestamp": session["session"].get(
                     "last_event_timestamp"
+                ),
+                "raw_last_record_timestamp": session["session"].get(
+                    "raw_last_record_timestamp"
+                ),
+                "last_meaningful_activity_timestamp": session["session"].get(
+                    "last_meaningful_activity_timestamp"
                 ),
             }
             for session in cleaned_sessions
