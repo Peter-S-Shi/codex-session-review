@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Codex Session Review · Prompt Generator</title>
+<style>
+  :root {
+    --bg: #f5f7fb;
+    --panel: #ffffff;
+    --text: #172033;
+    --muted: #667085;
+    --border: #d8dee9;
+    --accent: #3157d5;
+    --accent-soft: #eef2ff;
+    --danger: #b42318;
+    --success: #067647;
+    --shadow: 0 12px 32px rgba(23, 32, 51, 0.08);
+    --radius: 16px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: Inter, "Segoe UI", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  .app {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 28px 18px 56px;
+  }
+
+  .hero {
+    background: linear-gradient(135deg, #ffffff, #eef2ff);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    box-shadow: var(--shadow);
+    padding: 26px 28px;
+    margin-bottom: 20px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 800;
+    margin-bottom: 10px;
+  }
+
+  h1 {
+    margin: 0 0 8px;
+    font-size: 30px;
+    line-height: 1.2;
+  }
+
+  h2 {
+    margin: 0 0 8px;
+    font-size: 21px;
+  }
+
+  h3 {
+    margin: 0 0 8px;
+    font-size: 17px;
+  }
+
+  p { margin: 8px 0; }
+
+  .muted { color: var(--muted); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: 18px;
+    align-items: start;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 22px;
+  }
+
+  .field {
+    margin-bottom: 20px;
+  }
+
+  .field:last-child { margin-bottom: 0; }
+
+  label.title {
+    display: block;
+    font-weight: 800;
+    margin-bottom: 6px;
+  }
+
+  .required {
+    color: var(--danger);
+    margin-left: 4px;
+  }
+
+  .help {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 9px;
+  }
+
+  input[type="text"],
+  textarea,
+  select {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 11px 12px;
+    font: inherit;
+    color: var(--text);
+    background: #fff;
+  }
+
+  textarea {
+    min-height: 100px;
+    resize: vertical;
+  }
+
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: 2px solid rgba(49, 87, 213, 0.18);
+    border-color: #93a5e5;
+  }
+
+  .choice-group {
+    display: grid;
+    gap: 8px;
+  }
+
+  .choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    background: #fff;
+    cursor: pointer;
+  }
+
+  .choice:hover {
+    border-color: #a7b3d5;
+    background: #fbfcff;
+  }
+
+  .choice input {
+    margin-top: 4px;
+  }
+
+  .choice strong {
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  .choice small {
+    display: block;
+    color: var(--muted);
+  }
+
+  .inline {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .inline > * {
+    flex: 1;
+  }
+
+  .session-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .session-row input {
+    flex: 1;
+  }
+
+  button {
+    border: 0;
+    border-radius: 12px;
+    padding: 10px 14px;
+    font: inherit;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .primary {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .secondary {
+    background: #eef1f5;
+    color: var(--text);
+  }
+
+  .ghost {
+    background: #fff;
+    color: var(--accent);
+    border: 1px solid #c8d3f4;
+  }
+
+  .danger {
+    background: #fee4e2;
+    color: #912018;
+  }
+
+  .small-btn {
+    padding: 8px 11px;
+    font-size: 13px;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 20px;
+  }
+
+  .prompt-box {
+    min-height: 460px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #111827;
+    color: #e5e7eb;
+    border-radius: 14px;
+    padding: 16px;
+    font-family: Consolas, Monaco, "Courier New", monospace;
+    font-size: 13px;
+    overflow: auto;
+  }
+
+  .notice {
+    border-radius: 12px;
+    padding: 11px 12px;
+    margin-bottom: 14px;
+    font-size: 13px;
+  }
+
+  .notice.info {
+    background: #f0f4ff;
+    border: 1px solid #cbd5ff;
+    color: #344054;
+  }
+
+  .notice.warn {
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+    color: #9a3412;
+  }
+
+  .notice.success {
+    background: #ecfdf3;
+    border: 1px solid #abefc6;
+    color: var(--success);
+  }
+
+  .hidden { display: none !important; }
+
+  .error {
+    font-size: 13px;
+    color: var(--danger);
+    margin-top: 6px;
+  }
+
+  .status {
+    min-height: 20px;
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+
+  .footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 18px;
+  }
+
+  @media (max-width: 860px) {
+    .grid {
+      grid-template-columns: 1fr;
+    }
+
+    .prompt-box {
+      min-height: 320px;
+    }
+
+    h1 {
+      font-size: 25px;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <section class="hero">
+    <div class="badge">Codex Session Review · V1</div>
+    <h1>Prompt Generator</h1>
+    <p>Create a clean, scope-aware prompt for reviewing Codex development sessions.</p>
+    <p class="muted">
+      V1 analyzes Codex sessions only. The agent executing the Skill may be Codex,
+      Claude Code, or another compatible agent. Future versions may support more
+      session providers.
+    </p>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>Analysis Setup</h2>
+      <p class="muted">
+        Required fields are marked with <span class="required">*</span>.
+        Use privacy-neutral names in shared examples; use your real local values only when running the Skill.
+      </p>
+
+      <div class="field">
+        <label class="title" for="analysisName">1. Analysis Name<span class="required">*</span></label>
+        <div class="help">A user-defined name for this review, used for report organization and future comparison.</div>
+        <input id="analysisName" type="text" placeholder="e.g. Iteration Review 01" />
+        <div id="analysisNameError" class="error hidden">Please provide an Analysis Name.</div>
+      </div>
+
+      <div class="field">
+        <label class="title" for="analysisScope">2. Analysis Scope<span class="required">*</span></label>
+        <div class="help">Choose the unit of analysis.</div>
+        <select id="analysisScope">
+          <option value="single">Single Session</option>
+          <option value="selected">Selected Sessions</option>
+          <option value="project">Entire Project</option>
+        </select>
+      </div>
+
+      <div class="field" id="singleScopeBlock">
+        <label class="title" for="singleSession">3. Session Selection<span class="required">*</span></label>
+        <div class="help">Enter the user-facing name of the session you want reviewed.</div>
+        <input id="singleSession" type="text" placeholder="e.g. Session Alpha" />
+        <div id="singleSessionError" class="error hidden">Please provide the session name.</div>
+      </div>
+
+      <div class="field hidden" id="selectedScopeBlock">
+        <label class="title">3. Session Selection<span class="required">*</span></label>
+        <div class="help">Add two or more specific sessions. They do not need to be contiguous.</div>
+        <div id="selectedSessions"></div>
+        <button class="ghost small-btn" type="button" onclick="addSessionRow()">+ Add Session</button>
+        <div id="selectedSessionsError" class="error hidden">Please provide at least two session names.</div>
+      </div>
+
+      <div class="field hidden" id="projectScopeBlock">
+        <label class="title" for="projectLabel">3. Project / Session Group<span class="required">*</span></label>
+        <div class="help">
+          Used to discover candidate sessions. Resolved Codex Session IDs (thread/rollout IDs) remain the final analysis identity.
+        </div>
+        <input id="projectLabel" type="text" placeholder="e.g. Project Alpha" />
+        <div id="projectLabelError" class="error hidden">Please provide the project/session-group label.</div>
+      </div>
+
+      <div class="field">
+        <label class="title">4. Codex Session Storage<span class="required">*</span></label>
+        <div class="help">
+          If you have not changed the Codex session storage location, declare that explicitly to reduce unnecessary discovery work.
+        </div>
+        <div class="choice-group">
+          <label class="choice">
+            <input type="radio" name="storageMode" value="default" checked />
+            <span>
+              <strong>Default Codex location</strong>
+              <small>I have not changed the Codex session storage location.</small>
+            </span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="storageMode" value="custom" />
+            <span>
+              <strong>Custom location</strong>
+              <small>I use a non-default session directory.</small>
+            </span>
+          </label>
+        </div>
+        <div id="customStorageWrap" class="hidden" style="margin-top:10px;">
+          <input id="customStorage" type="text" placeholder="<codex-session-directory>" />
+          <div id="customStorageError" class="error hidden">Please provide the custom session directory.</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="title" for="outputRoot">5. Analysis Output Root<span class="required">*</span></label>
+        <div class="help">
+          One private local root. The Skill may create <code>cleaned/</code>, <code>reports/</code>, and <code>analysis-manifest.json</code> beneath it.
+        </div>
+        <input id="outputRoot" type="text" placeholder="<analysis-output-directory>" />
+        <div id="outputRootError" class="error hidden">Please provide an Analysis Output Root.</div>
+      </div>
+
+      <div class="field">
+        <label class="title">6. Report Length</label>
+        <div class="choice-group">
+          <label class="choice">
+            <input type="radio" name="reportLength" value="Brief" />
+            <span><strong>Brief</strong><small>Fast retrospective with only the highest-value findings.</small></span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="reportLength" value="Standard" checked />
+            <span><strong>Standard</strong><small>Default V1 report depth.</small></span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="reportLength" value="Deep" />
+            <span><strong>Deep</strong><small>More evidence, session-by-session detail, and richer comparison.</small></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="title">7. Previous Report</label>
+        <div class="choice-group">
+          <label class="choice">
+            <input type="radio" name="previousMode" value="none" checked />
+            <span><strong>None</strong><small>This review becomes the baseline.</small></span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="previousMode" value="existing" />
+            <span><strong>Existing report</strong><small>Compare this review against a previous baseline.</small></span>
+          </label>
+        </div>
+        <div id="previousReportWrap" class="hidden" style="margin-top:10px;">
+          <input id="previousReport" type="text" placeholder="<previous-report-path>" />
+          <div id="previousReportError" class="error hidden">Please provide the previous report path.</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="title" for="reportLanguage">8. Report Language</label>
+        <div class="help">English is the V1 default unless explicitly changed.</div>
+        <select id="reportLanguage">
+          <option value="English" selected>English</option>
+          <option value="Chinese">Chinese</option>
+          <option value="Other">Other</option>
+        </select>
+        <div id="otherLanguageWrap" class="hidden" style="margin-top:10px;">
+          <input id="otherLanguage" type="text" placeholder="e.g. French" />
+          <div id="otherLanguageError" class="error hidden">Please specify the report language.</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="title" for="specialFocus">9. Special Focus</label>
+        <div class="help">
+          Optional emphasis. It does not replace the standard seven V1 analysis dimensions.
+        </div>
+        <textarea id="specialFocus" placeholder="e.g. Context efficiency, token consumption, and repeated verification."></textarea>
+      </div>
+
+      <div class="actions">
+        <button class="primary" type="button" onclick="generatePrompt()">Generate Prompt</button>
+        <button class="secondary" type="button" onclick="resetForm()">Reset</button>
+      </div>
+
+      <div id="formStatus" class="status"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Generated Prompt</h2>
+
+      <div class="notice info">
+        The generated prompt describes intent and boundaries. The Skill itself should handle Session ID resolution, cleaning, token extraction, analysis, and reporting.
+      </div>
+
+      <div id="projectNotice" class="notice warn hidden">
+        Entire Project mode requires candidate discovery first. Ambiguous sessions must not be silently included.
+      </div>
+
+      <div id="promptOutput" class="prompt-box">Complete the setup and click “Generate Prompt”.</div>
+
+      <div class="actions">
+        <button class="primary" type="button" onclick="copyPrompt()">Copy Prompt</button>
+        <button class="ghost" type="button" onclick="downloadPrompt()">Download Markdown</button>
+      </div>
+
+      <div id="copyStatus" class="status"></div>
+    </section>
+  </div>
+
+  <div class="footer">
+    Local single-file tool · No server · No external dependencies · No network request
+  </div>
+</div>
+
+<script>
+  const scopeSelect = document.getElementById("analysisScope");
+  const singleScopeBlock = document.getElementById("singleScopeBlock");
+  const selectedScopeBlock = document.getElementById("selectedScopeBlock");
+  const projectScopeBlock = document.getElementById("projectScopeBlock");
+  const selectedSessions = document.getElementById("selectedSessions");
+  const projectNotice = document.getElementById("projectNotice");
+
+  let lastGeneratedPrompt = "";
+
+  function escapeForPrompt(value) {
+    return (value || "").trim();
+  }
+
+  function setHidden(id, hidden) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle("hidden", hidden);
+  }
+
+  function getRadioValue(name) {
+    const el = document.querySelector(`input[name="${name}"]:checked`);
+    return el ? el.value : "";
+  }
+
+  function addSessionRow(value = "") {
+    const row = document.createElement("div");
+    row.className = "session-row";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "e.g. Session Alpha";
+    input.value = value;
+    input.className = "selected-session-input";
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger small-btn";
+    remove.textContent = "Remove";
+    remove.onclick = () => {
+      row.remove();
+      ensureMinimumSessionRows();
+    };
+
+    row.appendChild(input);
+    row.appendChild(remove);
+    selectedSessions.appendChild(row);
+  }
+
+  function ensureMinimumSessionRows() {
+    const rows = selectedSessions.querySelectorAll(".session-row").length;
+    for (let i = rows; i < 2; i++) addSessionRow();
+  }
+
+  function updateScopeUI() {
+    const scope = scopeSelect.value;
+
+    singleScopeBlock.classList.toggle("hidden", scope !== "single");
+    selectedScopeBlock.classList.toggle("hidden", scope !== "selected");
+    projectScopeBlock.classList.toggle("hidden", scope !== "project");
+    projectNotice.classList.toggle("hidden", scope !== "project");
+
+    if (scope === "selected") {
+      ensureMinimumSessionRows();
+    }
+  }
+
+  function updateStorageUI() {
+    const mode = getRadioValue("storageMode");
+    setHidden("customStorageWrap", mode !== "custom");
+  }
+
+  function updatePreviousUI() {
+    const mode = getRadioValue("previousMode");
+    setHidden("previousReportWrap", mode !== "existing");
+  }
+
+  function updateLanguageUI() {
+    const language = document.getElementById("reportLanguage").value;
+    setHidden("otherLanguageWrap", language !== "Other");
+  }
+
+  function clearErrors() {
+    [
+      "analysisNameError",
+      "singleSessionError",
+      "selectedSessionsError",
+      "projectLabelError",
+      "customStorageError",
+      "outputRootError",
+      "previousReportError",
+      "otherLanguageError"
+    ].forEach(id => setHidden(id, true));
+  }
+
+  function validateForm() {
+    clearErrors();
+    let ok = true;
+
+    const analysisName = escapeForPrompt(document.getElementById("analysisName").value);
+    const scope = scopeSelect.value;
+    const storageMode = getRadioValue("storageMode");
+    const outputRoot = escapeForPrompt(document.getElementById("outputRoot").value);
+    const previousMode = getRadioValue("previousMode");
+    const reportLanguage = document.getElementById("reportLanguage").value;
+
+    if (!analysisName) {
+      setHidden("analysisNameError", false);
+      ok = false;
+    }
+
+    if (scope === "single") {
+      const value = escapeForPrompt(document.getElementById("singleSession").value);
+      if (!value) {
+        setHidden("singleSessionError", false);
+        ok = false;
+      }
+    }
+
+    if (scope === "selected") {
+      const values = [...document.querySelectorAll(".selected-session-input")]
+        .map(el => escapeForPrompt(el.value))
+        .filter(Boolean);
+      if (values.length < 2) {
+        setHidden("selectedSessionsError", false);
+        ok = false;
+      }
+    }
+
+    if (scope === "project") {
+      const value = escapeForPrompt(document.getElementById("projectLabel").value);
+      if (!value) {
+        setHidden("projectLabelError", false);
+        ok = false;
+      }
+    }
+
+    if (storageMode === "custom") {
+      const value = escapeForPrompt(document.getElementById("customStorage").value);
+      if (!value) {
+        setHidden("customStorageError", false);
+        ok = false;
+      }
+    }
+
+    if (!outputRoot) {
+      setHidden("outputRootError", false);
+      ok = false;
+    }
+
+    if (previousMode === "existing") {
+      const value = escapeForPrompt(document.getElementById("previousReport").value);
+      if (!value) {
+        setHidden("previousReportError", false);
+        ok = false;
+      }
+    }
+
+    if (reportLanguage === "Other") {
+      const value = escapeForPrompt(document.getElementById("otherLanguage").value);
+      if (!value) {
+        setHidden("otherLanguageError", false);
+        ok = false;
+      }
+    }
+
+    return ok;
+  }
+
+  function generatePrompt() {
+    const status = document.getElementById("formStatus");
+    status.textContent = "";
+
+    if (!validateForm()) {
+      status.textContent = "Please complete the required fields.";
+      return;
+    }
+
+    const analysisName = escapeForPrompt(document.getElementById("analysisName").value);
+    const scope = scopeSelect.value;
+    const storageMode = getRadioValue("storageMode");
+    const outputRoot = escapeForPrompt(document.getElementById("outputRoot").value);
+    const reportLength = getRadioValue("reportLength");
+    const previousMode = getRadioValue("previousMode");
+    const selectedLanguage = document.getElementById("reportLanguage").value;
+    const reportLanguage = selectedLanguage === "Other"
+      ? escapeForPrompt(document.getElementById("otherLanguage").value)
+      : selectedLanguage;
+    const specialFocus = escapeForPrompt(document.getElementById("specialFocus").value);
+
+    let scopeLabel = "";
+    let selectionBlock = "";
+    let scopeInstructions = "";
+
+    if (scope === "single") {
+      scopeLabel = "Single Session";
+      const session = escapeForPrompt(document.getElementById("singleSession").value);
+      selectionBlock = `Session Selection:\n${session}`;
+      scopeInstructions = [
+        "Resolve the requested session to its real Codex Session ID (thread/rollout ID) before analysis.",
+        "Do not rely on the display name as final identity."
+      ].join("\n");
+    }
+
+    if (scope === "selected") {
+      scopeLabel = "Selected Sessions";
+      const sessions = [...document.querySelectorAll(".selected-session-input")]
+        .map(el => escapeForPrompt(el.value))
+        .filter(Boolean);
+      selectionBlock = "Session Selection:\n" + sessions.map(s => `- ${s}`).join("\n");
+      scopeInstructions = [
+        "Resolve each requested session independently to its real Codex Session ID (thread/rollout ID).",
+        "Deduplicate the final Session ID set before cleaning or analysis."
+      ].join("\n");
+    }
+
+    if (scope === "project") {
+      scopeLabel = "Entire Project";
+      const project = escapeForPrompt(document.getElementById("projectLabel").value);
+      selectionBlock = `Project / Session Group:\n${project}`;
+      scopeInstructions = [
+        "First discover the candidate Codex sessions associated with this project/session group.",
+        "Do not silently include ambiguous sessions.",
+        "Resolve the final project scope to a unique set of Codex Session IDs (thread/rollout IDs) before cleaning or analysis."
+      ].join("\n");
+    }
+
+    let storageBlock = "";
+    if (storageMode === "default") {
+      storageBlock = [
+        "Codex Session Storage:",
+        "Default location. I have not changed it.",
+        "",
+        "Use the standard Codex session location directly; do not spend effort rediscovering it."
+      ].join("\n");
+    } else {
+      const customStorage = escapeForPrompt(document.getElementById("customStorage").value);
+      storageBlock = [
+        "Codex Session Storage:",
+        "Custom location:",
+        customStorage,
+        "",
+        "Use the supplied session directory directly."
+      ].join("\n");
+    }
+
+    let previousBlock = "";
+    if (previousMode === "existing") {
+      const previousReport = escapeForPrompt(document.getElementById("previousReport").value);
+      previousBlock = [
+        "Previous Report:",
+        previousReport,
+        "",
+        "Use it as a longitudinal comparison baseline where the current work is meaningfully comparable."
+      ].join("\n");
+    } else {
+      previousBlock = [
+        "Previous Report:",
+        "None"
+      ].join("\n");
+    }
+
+    const specialBlock = specialFocus
+      ? `Special Focus:\n${specialFocus}`
+      : "Special Focus:\nNone";
+
+    const workflowBlock = [
+      "Required Workflow:",
+      "1. Resolve the real Codex Session ID or Session ID set for the requested scope.",
+      "2. Keep raw Codex session files read-only.",
+      "3. Run the Skill's cleaner on the resolved sessions.",
+      "4. Extract reliable token usage programmatically; mark unavailable fields instead of estimating them.",
+      "5. Reconstruct the observable development workflow from the cleaned evidence.",
+      "6. Apply the standard V1 analysis framework.",
+      "7. Generate the final report at the requested depth.",
+      "8. If a previous report is supplied, compare the same V1 dimensions where meaningful.",
+      "9. Propose Candidate Development Principles only when supported by evidence.",
+      "10. Do not convert Candidate Development Principles into long-term rules or memory without explicit user approval."
+    ].join("\n");
+
+    lastGeneratedPrompt = [
+      "Use the codex-session-review Skill.",
+      "",
+      "Analysis Name:",
+      analysisName,
+      "",
+      "Analysis Scope:",
+      scopeLabel,
+      "",
+      selectionBlock,
+      "",
+      storageBlock,
+      "",
+      "Analysis Output Root:",
+      outputRoot,
+      "",
+      "Report Length:",
+      reportLength,
+      "",
+      previousBlock,
+      "",
+      "Report Language:",
+      reportLanguage,
+      "",
+      specialBlock,
+      "",
+      scopeInstructions,
+      "",
+      workflowBlock
+    ].join("\n");
+
+    document.getElementById("promptOutput").textContent = lastGeneratedPrompt;
+    status.textContent = "Prompt generated.";
+    document.getElementById("copyStatus").textContent = "";
+  }
+
+  async function copyPrompt() {
+    const status = document.getElementById("copyStatus");
+    if (!lastGeneratedPrompt) {
+      status.textContent = "Generate a prompt first.";
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(lastGeneratedPrompt);
+      status.textContent = "Prompt copied.";
+    } catch (err) {
+      const textarea = document.createElement("textarea");
+      textarea.value = lastGeneratedPrompt;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+
+      try {
+        document.execCommand("copy");
+        status.textContent = "Prompt copied.";
+      } catch (_) {
+        status.textContent = "Copy failed. Select the generated prompt manually.";
+      } finally {
+        textarea.remove();
+      }
+    }
+  }
+
+  function slugify(value) {
+    const cleaned = (value || "codex-session-review")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return cleaned || "codex-session-review";
+  }
+
+  function downloadPrompt() {
+    const status = document.getElementById("copyStatus");
+    if (!lastGeneratedPrompt) {
+      status.textContent = "Generate a prompt first.";
+      return;
+    }
+
+    const analysisName = document.getElementById("analysisName").value;
+    const blob = new Blob([lastGeneratedPrompt + "\n"], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${slugify(analysisName)}-prompt.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    URL.revokeObjectURL(url);
+    status.textContent = "Markdown prompt downloaded.";
+  }
+
+  function resetForm() {
+    document.getElementById("analysisName").value = "";
+    scopeSelect.value = "single";
+    document.getElementById("singleSession").value = "";
+    selectedSessions.innerHTML = "";
+    addSessionRow();
+    addSessionRow();
+    document.getElementById("projectLabel").value = "";
+
+    document.querySelector('input[name="storageMode"][value="default"]').checked = true;
+    document.getElementById("customStorage").value = "";
+
+    document.getElementById("outputRoot").value = "";
+
+    document.querySelector('input[name="reportLength"][value="Standard"]').checked = true;
+
+    document.querySelector('input[name="previousMode"][value="none"]').checked = true;
+    document.getElementById("previousReport").value = "";
+
+    document.getElementById("reportLanguage").value = "English";
+    document.getElementById("otherLanguage").value = "";
+
+    document.getElementById("specialFocus").value = "";
+
+    lastGeneratedPrompt = "";
+    document.getElementById("promptOutput").textContent = "Complete the setup and click “Generate Prompt”.";
+    document.getElementById("formStatus").textContent = "";
+    document.getElementById("copyStatus").textContent = "";
+
+    clearErrors();
+    updateScopeUI();
+    updateStorageUI();
+    updatePreviousUI();
+    updateLanguageUI();
+  }
+
+  scopeSelect.addEventListener("change", updateScopeUI);
+
+  document.querySelectorAll('input[name="storageMode"]').forEach(el => {
+    el.addEventListener("change", updateStorageUI);
+  });
+
+  document.querySelectorAll('input[name="previousMode"]').forEach(el => {
+    el.addEventListener("change", updatePreviousUI);
+  });
+
+  document.getElementById("reportLanguage").addEventListener("change", updateLanguageUI);
+
+  // Initial state.
+  addSessionRow();
+  addSessionRow();
+  updateScopeUI();
+  updateStorageUI();
+  updatePreviousUI();
+  updateLanguageUI();
+</script>
+</body>
+</html>
